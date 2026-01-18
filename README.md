@@ -91,8 +91,10 @@ I included the patched file because of a bug (listed above) in the dissect.qnxfs
 
 1. **Browse** - Select your disk image (.img, .raw, .dd)
 2. **Scan** - Click "Scan QNX4 Filesystem" to analyze
-3. **Extract** - Select files/folders and choose output directory.  (Media is typically stored within the 'playlists' folder inside the fs2 mountpoint) 
-4. **Progress** - Watch real-time extraction progress with file-by-file status
+3. **Extract** - Select files/folders (Shift/Ctrl+Click for multiple) and choose output directory
+4. **Progress** - Real-time extraction status with file-by-file updates
+
+💡 **MyGig Tip:** Music files are typically in `/fs2/playlists/` - you can extract the entire folder simply by clicking 'playlists' and then 'Extract Selected' or choose individual files/folders within it.
 
 ## Supported Use Cases
 
