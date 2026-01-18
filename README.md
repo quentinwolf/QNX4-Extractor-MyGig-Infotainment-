@@ -91,7 +91,7 @@ I included the patched file because of a bug (listed above) in the dissect.qnxfs
 
 1. **Browse** - Select your disk image (.img, .raw, .dd)
 2. **Scan** - Click "Scan QNX4 Filesystem" to analyze
-3. **Extract** - Select files/folders and choose output directory
+3. **Extract** - Select files/folders and choose output directory.  (Media is typically stored within the 'playlists' folder inside the fs2 mountpoint) 
 4. **Progress** - Watch real-time extraction progress with file-by-file status
 
 ## Supported Use Cases
