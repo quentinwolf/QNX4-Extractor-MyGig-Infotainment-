@@ -5,9 +5,9 @@ Professional-grade recovery tool for extracting files from QNX4 filesystems (com
 ## Features
 
 ✅ **Complete filesystem browser** - Extract any file type from QNX4 partitions  
-✅ **Full file recovery** - Finds all files (1200+ files typical in MyGig systems)  
+✅ **Full file recovery** - Finds all files in MyGig systems
 ✅ **Metadata preservation** - ID3 tags, EXIF data, and all file attributes intact  
-✅ **Hierarchical browsing** - Navigate entire directory structure in GUI  
+✅ **Hierarchical browsing** - Navigate entire directory structure with a GUI  
 ✅ **Visual progress** - Real-time extraction progress with file-by-file status  
 ✅ **Batch extraction** - Extract individual files, folders, or entire filesystem  
 ✅ **Professional parsing** - Uses dissect.target forensics library with bug fixes  
