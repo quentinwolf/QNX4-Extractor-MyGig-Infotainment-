@@ -1,4 +1,4 @@
-# QNX4 File Recovery Tool v3.0
+# QNX4 File Recovery Tool v3.1
 
 Professional-grade recovery tool for extracting files from QNX4 filesystems (commonly found in Chrysler MyGig infotainment systems) with **complete data integrity and metadata preservation**.
 
@@ -7,10 +7,13 @@ Professional-grade recovery tool for extracting files from QNX4 filesystems (com
 ✅ **Complete filesystem browser** - Extract any file type from QNX4 partitions  
 ✅ **Full file recovery** - Finds all files in MyGig systems
 ✅ **Metadata preservation** - ID3 tags, EXIF data, and all file attributes intact  
+✅ **Live search** - Filter files by name, path, or metadata in real-time *(requires mutagen)*  
 ✅ **Hierarchical browsing** - Navigate entire directory structure with a GUI  
 ✅ **Visual progress** - Real-time extraction progress with file-by-file status  
+✅ **Smart extraction** - Extract folders or individual files without unwanted parent directories  
 ✅ **Batch extraction** - Extract individual files, folders, or entire filesystem  
-✅ **Professional parsing** - Uses dissect.target forensics library with bug fixes  
+✅ **Professional parsing** - Uses dissect.target forensics library with bug fixes
+
 
 ## Prerequisites
 
@@ -53,7 +56,8 @@ This tool includes patched versions of buggy code from dissect.qnxfs. To distrib
 **Users only need to:**
 
 1. Install: `pip install dissect.target`
-2. Run: `python mygig_recovery_v3.py`
+2. (Optional) Install: `pip install mutagen` - for metadata extraction and search
+3. Run: `python mygig_recovery_v3.py`
 
 The patch is applied automatically at startup.
 
@@ -123,7 +127,13 @@ The bug fixes in `qnx4_patched.py` maintain the same license as the original dis
 
 ## Changelog
 
-### v3.0 (Current)
+### v3.1 (Current)
+
+- Added live-search box to find files/folders more easily
+- Fixed extraction to no longer include the parent directory hierarchy when extracting
+- Added Optional Metadata extraction (helpful for searching) to display Title/Artist/Album and Bitrate of music files
+
+### v3.0
 
 - Switched to dissect.target for professional-grade parsing
 - Added automatic bug patching for dissect.qnxfs

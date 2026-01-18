@@ -35,6 +35,12 @@ except ImportError:
     )
     sys.exit(1)
 
+# Check for optional metadata support
+try:
+    import mutagen
+    METADATA_AVAILABLE = True
+except ImportError:
+    METADATA_AVAILABLE = False
 
 class QNX4ScannerGUI:
     """GUI for QNX4 MP3 Recovery using dissect.target"""
@@ -47,7 +53,9 @@ class QNX4ScannerGUI:
         self.image_path = None
         self.target = None
         self.found_files = []
+        self.all_files_cache = []  # Unfiltered list for search
         self.scan_thread = None
+        self.metadata_db_path = None
         
         self.create_widgets()
     
@@ -63,6 +71,23 @@ class QNX4ScannerGUI:
         
         self.scan_button = ttk.Button(top_frame, text="Scan QNX4 Filesystem", command=self.start_scan)
         self.scan_button.pack(side=tk.LEFT, padx=5)
+        
+        # Metadata button (only if mutagen available)
+        if METADATA_AVAILABLE:
+            self.metadata_button = ttk.Button(top_frame, text="Extract Metadata", command=self.start_metadata_extraction, state='disabled')
+            self.metadata_button.pack(side=tk.LEFT, padx=5)
+        
+        # Search box (only if mutagen available)
+        if METADATA_AVAILABLE:
+            search_frame = ttk.Frame(self.root, padding="10")
+            search_frame.pack(fill=tk.X)
+            
+            ttk.Label(search_frame, text="Search:").pack(side=tk.LEFT)
+            self.search_var = tk.StringVar()
+            self.search_var.trace('w', lambda *args: self.filter_tree())
+            search_entry = ttk.Entry(search_frame, textvariable=self.search_var, width=50)
+            search_entry.pack(side=tk.LEFT, padx=5)
+            ttk.Label(search_frame, text="(searches name, path, title, artist, album, bitrate)", foreground="gray").pack(side=tk.LEFT)
         
         # Progress bar
         self.progress_var = tk.IntVar()
@@ -80,13 +105,25 @@ class QNX4ScannerGUI:
         results_frame = ttk.Frame(self.root, padding="10")
         results_frame.pack(fill=tk.BOTH, expand=True)
         
-        # Treeview with hierarchical support (removed Modified Date column)
-        columns = ('Size', 'Path')
+        # Treeview with hierarchical support + metadata columns
+        columns = ('Size', 'Title', 'Artist', 'Album', 'Bitrate', 'Path')
         self.tree = ttk.Treeview(results_frame, columns=columns, show='tree headings')
         
         self.tree.heading('#0', text='Name')
         self.tree.heading('Size', text='Size (MB)')
+        self.tree.heading('Title', text='Title')
+        self.tree.heading('Artist', text='Artist')
+        self.tree.heading('Album', text='Album')
+        self.tree.heading('Bitrate', text='Bitrate')
         self.tree.heading('Path', text='Full Path')
+        
+        self.tree.column('#0', width=300)
+        self.tree.column('Size', width=80)
+        self.tree.column('Title', width=200)
+        self.tree.column('Artist', width=150)
+        self.tree.column('Album', width=150)
+        self.tree.column('Bitrate', width=80)
+        self.tree.column('Path', width=300)
         
         self.tree.column('#0', width=500)
         self.tree.column('Size', width=100)
@@ -138,6 +175,255 @@ class QNX4ScannerGUI:
         self.scan_thread.daemon = True
         self.scan_thread.start()
     
+    def get_db_path(self):
+        """Get metadata database path for current image"""
+        if not self.image_path:
+            return None
+        return self.image_path + ".metadata.db"
+    
+    def load_metadata_cache(self):
+        """Load metadata from SQLite cache if exists"""
+        import sqlite3
+        
+        db_path = self.get_db_path()
+        if not db_path or not os.path.exists(db_path):
+            return {}
+        
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT path, title, artist, album, bitrate FROM metadata")
+            
+            metadata_cache = {}
+            for row in cursor.fetchall():
+                path, title, artist, album, bitrate = row
+                metadata_cache[path] = {
+                    'title': title or '',
+                    'artist': artist or '',
+                    'album': album or '',
+                    'bitrate': bitrate or ''
+                }
+            
+            conn.close()
+            self.update_status(f"✓ Loaded cached metadata from {os.path.basename(db_path)}")
+            return metadata_cache
+        except Exception as e:
+            print(f"Failed to load metadata cache: {e}")
+            return {}
+    
+    def save_metadata_cache(self):
+        """Save metadata to SQLite cache"""
+        import sqlite3
+        
+        db_path = self.get_db_path()
+        if not db_path:
+            return
+        
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # Create table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS metadata (
+                    path TEXT PRIMARY KEY,
+                    title TEXT,
+                    artist TEXT,
+                    album TEXT,
+                    bitrate TEXT
+                )
+            """)
+            
+            # Insert metadata
+            for file_info in self.found_files:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO metadata (path, title, artist, album, bitrate)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (
+                    file_info['path'],
+                    file_info.get('title', ''),
+                    file_info.get('artist', ''),
+                    file_info.get('album', ''),
+                    file_info.get('bitrate', '')
+                ))
+            
+            conn.commit()
+            conn.close()
+            print(f"✓ Saved metadata cache to {db_path}")
+        except Exception as e:
+            print(f"Failed to save metadata cache: {e}")
+    
+    def extract_metadata_from_file(self, file_info):
+        """Extract metadata from a single file using mutagen"""
+        if not METADATA_AVAILABLE:
+            return
+        
+        from mutagen import File as MutagenFile
+        
+        try:
+            # Read file data into memory
+            with file_info['entry'].open() as fh:
+                data = fh.read()
+            
+            # Write to temp file for mutagen
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file_info['name'])[1]) as tmp:
+                tmp.write(data)
+                tmp_path = tmp.name
+            
+            try:
+                # Extract metadata
+                audio = MutagenFile(tmp_path, easy=True)
+                
+                if audio is not None:
+                    # Get title, artist, album
+                    file_info['title'] = audio.get('title', [''])[0] if hasattr(audio, 'get') else ''
+                    file_info['artist'] = audio.get('artist', [''])[0] if hasattr(audio, 'get') else ''
+                    file_info['album'] = audio.get('album', [''])[0] if hasattr(audio, 'get') else ''
+                    
+                    # Get bitrate
+                    if hasattr(audio.info, 'bitrate'):
+                        file_info['bitrate'] = f"{audio.info.bitrate // 1000} kbps"
+                    else:
+                        file_info['bitrate'] = ''
+                else:
+                    file_info['title'] = ''
+                    file_info['artist'] = ''
+                    file_info['album'] = ''
+                    file_info['bitrate'] = ''
+            finally:
+                os.unlink(tmp_path)
+        except Exception as e:
+            # Not an audio file or failed to read
+            file_info['title'] = ''
+            file_info['artist'] = ''
+            file_info['album'] = ''
+            file_info['bitrate'] = ''
+    
+    def start_metadata_extraction(self):
+        """Start metadata extraction in background thread"""
+        if not METADATA_AVAILABLE:
+            messagebox.showinfo("Info", "Metadata extraction requires the 'mutagen' library.\n\nInstall with: pip install mutagen")
+            return
+        
+        if not self.found_files:
+            messagebox.showinfo("Info", "No files to process")
+            return
+        
+        self.metadata_button.config(state='disabled')
+        self.scan_button.config(state='disabled')
+        
+        # Check if cache exists
+        metadata_cache = self.load_metadata_cache()
+        
+        # Start extraction
+        extract_thread = threading.Thread(target=self.metadata_extraction_worker, args=(metadata_cache,))
+        extract_thread.daemon = True
+        extract_thread.start()
+    
+    def metadata_extraction_worker(self, metadata_cache):
+        """Background thread for metadata extraction"""
+        total = len(self.found_files)
+        processed = 0
+        cached = 0
+        
+        try:
+            for file_info in self.found_files:
+                # Check cache first
+                if file_info['path'] in metadata_cache:
+                    file_info.update(metadata_cache[file_info['path']])
+                    cached += 1
+                else:
+                    self.extract_metadata_from_file(file_info)
+                
+                processed += 1
+                
+                # Update progress
+                progress = int((processed / total) * 100)
+                self.root.after(0, lambda p=progress: self.progress_var.set(p))
+                self.root.after(0, lambda n=processed, t=total: 
+                    self.status_var.set(f"Extracting metadata: {n}/{t} files ({cached} from cache)"))
+            
+            # Save cache
+            self.save_metadata_cache()
+            
+            # Refresh tree view
+            self.root.after(0, self.refresh_tree_with_metadata)
+            
+            self.root.after(0, lambda: self.status_var.set(f"✓ Metadata extraction complete! ({cached} from cache, {total - cached} extracted)"))
+            self.root.after(0, lambda: self.progress_var.set(100))
+        except Exception as e:
+            self.root.after(0, lambda: messagebox.showerror("Error", f"Metadata extraction failed: {str(e)}"))
+            import traceback
+            traceback.print_exc()
+        finally:
+            self.root.after(0, lambda: self.metadata_button.config(state='normal'))
+            self.root.after(0, lambda: self.scan_button.config(state='normal'))
+    
+    def refresh_tree_with_metadata(self):
+        """Refresh tree view to show metadata"""
+        # Clear and repopulate
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        
+        self.populate_tree()
+
+    def filter_tree(self):
+        """Filter tree view based on search query"""
+        query = self.search_var.get().lower()
+        
+        if not query:
+            # Show all - repopulate
+            for item in self.tree.get_children():
+                self.tree.delete(item)
+            self.populate_tree()
+            self.count_var.set(f"✓ {len(self.found_files)} files")
+            return
+        
+        # Clear tree
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        
+        # Build filtered tree
+        filtered_data = {}
+        
+        for idx, file_info in enumerate(self.found_files):
+            # Search in all fields
+            searchable = ' '.join([
+                file_info['name'],
+                file_info['path'],
+                file_info.get('title', ''),
+                file_info.get('artist', ''),
+                file_info.get('album', ''),
+                file_info.get('bitrate', '')
+            ]).lower()
+            
+            if query in searchable:
+                # Add to filtered tree
+                path = file_info['path']
+                parts = path.strip('/').split('/')
+                
+                current = filtered_data
+                for i, part in enumerate(parts[:-1]):
+                    if part not in current:
+                        current[part] = {'_dirs': {}, '_files': []}
+                    current = current[part]['_dirs']
+                
+                filename = parts[-1]
+                if filename not in current:
+                    current[filename] = {'_dirs': {}, '_files': []}
+                current[filename]['_files'].append(idx)
+        
+        # Populate filtered tree (with auto-expand)
+        self._add_tree_nodes(filtered_data, '', auto_expand=True)
+        
+        # Update status
+        matched_count = sum(1 for f in self.found_files if query in ' '.join([
+            f['name'], f['path'], f.get('title', ''), f.get('artist', ''), 
+            f.get('album', ''), f.get('bitrate', '')
+        ]).lower())
+        self.count_var.set(f"Showing {matched_count} of {len(self.found_files)} files")
+
     def scan_worker(self):
         """Background scanning thread using dissect.target"""
         try:
@@ -235,6 +521,8 @@ class QNX4ScannerGUI:
             self.root.after(0, lambda: messagebox.showerror("Scan Error", f"Failed to scan image:\n\n{str(e)}"))
         finally:
             self.root.after(0, lambda: self.scan_button.config(state='normal'))
+            if METADATA_AVAILABLE:
+                self.root.after(0, lambda: self.metadata_button.config(state='normal'))
     
     def populate_tree(self):
         """Populate treeview with hierarchical directory structure"""
@@ -260,7 +548,7 @@ class QNX4ScannerGUI:
         # Populate tree
         self._add_tree_nodes(tree_data, '')
     
-    def _add_tree_nodes(self, tree_data, parent=''):
+    def _add_tree_nodes(self, tree_data, parent='', auto_expand=False):
         """Recursively add nodes to treeview"""
         for name in sorted(tree_data.keys()):
             node = tree_data[name]
@@ -276,6 +564,10 @@ class QNX4ScannerGUI:
                     text=name,
                     values=(
                         f"{file_info['size'] / (1024*1024):.2f}",
+                        file_info.get('title', ''),
+                        file_info.get('artist', ''),
+                        file_info.get('album', ''),
+                        file_info.get('bitrate', ''),
                         file_info['path']
                     ),
                     tags=('file', str(file_idx))
@@ -285,13 +577,13 @@ class QNX4ScannerGUI:
                 # This is a directory
                 dir_node = self.tree.insert(parent, 'end',
                     text=f"📁 {name}",
-                    values=('', '', ''),
+                    values=('', '', '', '', '', ''),
                     tags=('directory',),
-                    open=False
+                    open=auto_expand  # Expand during search, collapse normally
                 )
                 
                 # Recursively add children
-                self._add_tree_nodes(subdirs, parent=dir_node)
+                self._add_tree_nodes(subdirs, parent=dir_node, auto_expand=auto_expand)
     
     def update_progress(self, value):
         self.root.after(0, lambda: self.progress_var.set(value))
@@ -313,21 +605,53 @@ class QNX4ScannerGUI:
         if not output_dir:
             return
         
-        # Collect file indices
+        # Determine if extracting directories or individual files
+        has_directories = any('directory' in self.tree.item(item, 'tags') for item in selection)
+        
+        # Collect file indices and paths
         file_indices = []
+        all_paths = []
+        
         for item in selection:
             tags = self.tree.item(item, 'tags')
             if 'directory' in tags:
-                file_indices.extend(self._get_files_in_tree_node(item))
+                dir_files = self._get_files_in_tree_node(item)
+                file_indices.extend(dir_files)
+                
+                # Collect paths for base path calculation
+                for idx in dir_files:
+                    all_paths.append(self.found_files[idx]['path'])
             else:
                 # Get file index from tags
                 for tag in tags:
                     if tag.isdigit():
                         file_indices.append(int(tag))
+                        all_paths.append(self.found_files[int(tag)]['path'])
         
         if not file_indices:
             messagebox.showinfo("Info", "No files to extract")
             return
+        
+        # Calculate base path to strip (common parent for all selected paths)
+        base_path_to_strip = None
+        if has_directories and all_paths:
+            # Find common parent directory
+            path_parts_list = [p.strip('/').split('/') for p in all_paths]
+            
+            # Find common prefix
+            common_parts = []
+            for i in range(min(len(parts) for parts in path_parts_list)):
+                parts_at_i = [parts[i] for parts in path_parts_list]
+                if len(set(parts_at_i)) == 1:
+                    common_parts.append(parts_at_i[0])
+                else:
+                    break
+            
+            # The base path is everything except the last common part (the selected folder)
+            if len(common_parts) > 1:
+                base_path_to_strip = '/' + '/'.join(common_parts[:-1])
+            else:
+                base_path_to_strip = ''
         
         # Disable buttons during extraction
         self.scan_button.config(state='disabled')
@@ -335,7 +659,7 @@ class QNX4ScannerGUI:
         # Run extraction in background thread
         extract_thread = threading.Thread(
             target=self._extract_files,
-            args=(file_indices, output_dir)
+            args=(file_indices, output_dir, base_path_to_strip, not has_directories)
         )
         extract_thread.daemon = True
         extract_thread.start()
@@ -376,8 +700,15 @@ class QNX4ScannerGUI:
         extract_thread.daemon = True
         extract_thread.start()
     
-    def _extract_files(self, file_indices, output_dir):
-        """Extract files by index with visual progress (runs in background thread)"""
+    def _extract_files(self, file_indices, output_dir, base_path_to_strip=None, flat_extraction=False):
+        """Extract files by index with visual progress (runs in background thread)
+        
+        Args:
+            file_indices: List of file indices to extract
+            output_dir: Output directory path
+            base_path_to_strip: Base path to strip from file paths (for folder extraction)
+            flat_extraction: If True, extract files flat without subdirectories
+        """
         extracted = 0
         failed = 0
         total = len(file_indices)
@@ -402,15 +733,26 @@ class QNX4ScannerGUI:
                 
                 # Get path parts
                 path = file_info['path']
-                path_parts = path.strip('/').split('/')
                 
-                # Create directory structure
-                current_dir = output_dir
-                for folder in path_parts[:-1]:
-                    current_dir = os.path.join(current_dir, folder)
-                    os.makedirs(current_dir, exist_ok=True)
-                
-                output_path = os.path.join(current_dir, path_parts[-1])
+                if flat_extraction:
+                    # Extract files flat (no subdirectories) - for individual file selections
+                    output_path = os.path.join(output_dir, file_info['name'])
+                else:
+                    # Strip base path if provided (for folder selections)
+                    if base_path_to_strip:
+                        relative_path = path[len(base_path_to_strip):].strip('/')
+                    else:
+                        relative_path = path.strip('/')
+                    
+                    path_parts = relative_path.split('/')
+                    
+                    # Create directory structure
+                    current_dir = output_dir
+                    for folder in path_parts[:-1]:
+                        current_dir = os.path.join(current_dir, folder)
+                        os.makedirs(current_dir, exist_ok=True)
+                    
+                    output_path = os.path.join(current_dir, path_parts[-1])
                 
                 try:
                     # Read file using dissect
